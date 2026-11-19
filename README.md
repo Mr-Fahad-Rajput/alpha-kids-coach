@@ -62,9 +62,12 @@ Write values in `.env.local` without quotes: `docker --env-file` keeps quotes as
 | `RATE_LIMIT_MAX` | No | Max `/api/coach` requests per 10 minutes per bucket (default 30). |
 | `TRUST_PROXY` | No | Set to `1` behind a trusted reverse proxy to rate-limit per client IP (`X-Forwarded-For` / `X-Real-IP`). Otherwise all clients share one bucket. |
 | `VERCEL` | No | Set to `1` automatically by Vercel; enables per-IP rate limiting like `TRUST_PROXY=1`. |
+| `RESPONSE_CACHE_TTL_SECONDS` | No | Lifetime of in-memory response-cache entries (default 600; `0` disables the cache). |
+| `HISTORY_CHAR_BUDGET` | No | Max characters of conversation history sent to the model (default 6000); oldest turns are dropped first. |
 | `EVAL_BASE_URL` | No | `npm run eval` only: base URL of the running app (default `http://localhost:3000`). |
 | `EVAL_PROVIDER` | No | `npm run eval` only: provider to request. |
 | `EVAL_MODEL` | No | `npm run eval` only: model to request. |
+| `EVAL_USE_CACHE` | No | `npm run eval` only: set to `1` to allow response-cache hits (bypassed by default). |
 
 "One provider required" means at least one provider must be configured.
 
@@ -109,6 +112,16 @@ Escalation works even when every LLM is down: the pre-check needs no provider, a
 
 The reply language is detected deterministically (`src/lib/safety/language.ts`) and the model is told to answer in that language; Urdu replies render right-to-left in a Nastaliq font.
 
+## Token, latency and cost optimisations
+
+- **Deterministic safety pre-check:** crisis messages get the templated escalation with 0 tokens and no network call.
+- **Stable prompt prefix:** the system prompt (rules + 4 few-shot examples) is byte-identical for every request; the reply language goes on a final line after the history, so OpenAI, DeepSeek and Gemini can reuse the cached prefix, and Anthropic gets an explicit `cacheControl: ephemeral` breakpoint on the system prompt.
+- **Response cache:** first-turn, non-crisis replies are cached in memory (LRU, 200 entries, `RESPONSE_CACHE_TTL_SECONDS`) under a SHA-256 key of normalized text + language + provider + model; identical concurrent requests share one LLM call; nothing is written to disk and message text is never logged.
+- **Context budget:** at most the last 12 messages and `HISTORY_CHAR_BUDGET` characters, oldest dropped first; earlier coach replies are sent compressed as summary + steps.
+- **Capped output, lowest reasoning:** fixed `maxOutputTokens` per provider and the lowest reasoning/thinking setting each provider allows.
+- **Unhealthy-provider skip:** a failed provider is skipped for 60 s, so fallbacks don't wait on a dead endpoint.
+- **Telemetry:** every reply carries `meta` (source, latency, input/output/cached tokens from the provider's usage data, provider, model); `GET /api/stats` returns in-memory totals; the header's "Under the hood" toggle shows both in the UI.
+
 ## Emergency numbers
 
 Verified 2026-11-19 (`src/lib/safety/numbers.ts`).
@@ -149,6 +162,8 @@ The runner posts each case to `${EVAL_BASE_URL:-http://localhost:3000}/api/coach
 - check-in and professional notice when expected
 - emergency numbers on escalations
 - `mustNot` patterns (for example doses like `5 ml` or "your child has ADHD"), case-insensitive
+
+The response cache is bypassed (`x-cache-bypass: 1`) unless `EVAL_USE_CACHE=1`. At the end the runner prints LLM replies, cache hits, pre-check hits, input/output/cached tokens and average latency, all from each reply's `meta`.
 
 Cases marked `soft` are reported but never fail the run. The runner prints a table (id | expected | got | pass | provider) and a per-category summary, writes `evals/results/latest.json` (gitignored), and exits 1 on any hard failure. Set `RATE_LIMIT_MAX=200` on the server so the run isn't rate limited.
 

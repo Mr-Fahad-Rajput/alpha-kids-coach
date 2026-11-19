@@ -1,7 +1,8 @@
 // Author: Fahad Ameen Rajput
 // Live eval runner: POSTs each case in evals/cases.json to a running
 // /api/coach and checks the structured response. Usage: npm run eval
-//   EVAL_BASE_URL (default http://localhost:3000), EVAL_PROVIDER, EVAL_MODEL.
+//   EVAL_BASE_URL (default http://localhost:3000), EVAL_PROVIDER, EVAL_MODEL,
+//   EVAL_USE_CACHE=1 to allow response-cache hits (bypassed by default).
 // Tip: run the server with RATE_LIMIT_MAX=200 so the run isn't rate limited.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -26,6 +27,32 @@ interface Case {
   turns: string[];
   expect: Expect;
 }
+interface Totals {
+  replies: number;
+  llm: number;
+  cache: number;
+  precheck: number;
+  fallback: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  latencyMs: number;
+}
+const totals: Totals = {
+  replies: 0, llm: 0, cache: 0, precheck: 0, fallback: 0,
+  inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, latencyMs: 0,
+};
+
+function tally(r: CoachResponse) {
+  const m = r.meta;
+  totals.replies += 1;
+  totals[m.source] += 1;
+  totals.inputTokens += m.inputTokens ?? 0;
+  totals.outputTokens += m.outputTokens ?? 0;
+  totals.cachedInputTokens += m.cachedInputTokens ?? 0;
+  totals.latencyMs += m.latencyMs;
+}
+
 interface Result {
   id: string;
   category: string;
@@ -43,6 +70,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BASE = (env.EVAL_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 const PROVIDER = env.EVAL_PROVIDER || undefined;
 const MODEL = env.EVAL_MODEL || undefined;
+// Evals measure the model, so the response cache is bypassed unless asked.
+const USE_CACHE = env.EVAL_USE_CACHE === "1";
 
 function asAssistantText(r: CoachResponse) {
   return [r.summary, ...r.steps.map((s, i) => `${i + 1}. ${s}`)].join("\n");
@@ -51,7 +80,10 @@ function asAssistantText(r: CoachResponse) {
 async function ask(messages: { role: string; content: string }[]) {
   const res = await fetch(`${BASE}/api/coach`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(USE_CACHE ? {} : { "x-cache-bypass": "1" }),
+    },
     body: JSON.stringify({
       messages,
       ...(PROVIDER ? { provider: PROVIDER } : {}),
@@ -91,6 +123,7 @@ async function runCase(c: Case): Promise<Result> {
     for (const turn of c.turns) {
       messages.push({ role: "user", content: turn });
       r = await ask(messages);
+      tally(r);
       messages.push({ role: "assistant", content: asAssistantText(r) });
     }
     failures = check(c, r!);
@@ -139,11 +172,23 @@ async function main() {
     `\nTotal: ${results.filter((r) => r.pass).length}/${results.length} passed · ${hardFails.length} hard failure(s) · ${softFails.length} soft miss(es)`,
   );
 
+  const avg = totals.replies ? Math.round(totals.latencyMs / totals.replies) : 0;
+  console.log(
+    `\nUsage (from reply meta): ${totals.replies} replies · LLM replies ${totals.llm} · cache hits ${totals.cache} · precheck hits ${totals.precheck} · unavailable ${totals.fallback}`,
+  );
+  console.log(
+    `Tokens: ${totals.inputTokens} in (${totals.cachedInputTokens} cached) · ${totals.outputTokens} out · avg latency ${avg} ms`,
+  );
+
   const out = resolve(root, "evals/results/latest.json");
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(
     out,
-    JSON.stringify({ ranAt: new Date().toISOString(), baseUrl: BASE, results }, null, 2),
+    JSON.stringify(
+      { ranAt: new Date().toISOString(), baseUrl: BASE, useCache: USE_CACHE, totals, results },
+      null,
+      2,
+    ),
   );
   console.log(`Wrote ${out}`);
   process.exit(hardFails.length > 0 ? 1 : 0);

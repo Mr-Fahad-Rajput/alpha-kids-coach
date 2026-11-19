@@ -6,7 +6,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import CoachCard from "@/components/CoachCard";
 import ModelPicker, { type ProviderOption } from "@/components/ModelPicker";
-import { ArrowUpIcon, ResetIcon } from "@/components/icons";
+import { ArrowUpIcon, ChipIcon, ResetIcon } from "@/components/icons";
+import { StatsStrip, telemetryLine } from "@/components/UnderTheHood";
+import type { Stats } from "@/lib/coach/stats";
 import {
   CoachResponseSchema,
   HISTORY_LIMIT,
@@ -75,6 +77,8 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [showHood, setShowHood] = useState(false);
+  const [stats, setStats] = useState<Stats | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -117,6 +121,26 @@ export default function Home() {
     [providers],
   );
 
+  const modelLabel = useCallback(
+    (providerId: string | null, modelId: string | null) => {
+      const p = providers?.find((x) => x.id === providerId);
+      if (!modelId) return p?.label ?? providerId ?? "";
+      return p?.models.find((m) => m.id === modelId)?.label ?? modelId;
+    },
+    [providers],
+  );
+
+  const refreshStats = useCallback(() => {
+    fetch("/api/stats", { cache: "no-store" })
+      .then((r) => (r.ok ? (r.json() as Promise<Stats>) : Promise.reject()))
+      .then(setStats)
+      .catch(() => setStats(null));
+  }, []);
+
+  useEffect(() => {
+    if (showHood) refreshStats();
+  }, [showHood, refreshStats]);
+
   async function request(history: Turn[]) {
     setPending(true);
     try {
@@ -143,6 +167,7 @@ export default function Home() {
       setTurns([...history, { id: nextId++, role: "error", text: ERROR_TEXT.network }]);
     } finally {
       setPending(false);
+      if (showHood) refreshStats();
     }
   }
 
@@ -191,6 +216,18 @@ export default function Home() {
               onModelChange={setModel}
               disabled={pending}
             />
+            <button
+              type="button"
+              onClick={() => setShowHood((v) => !v)}
+              aria-pressed={showHood}
+              aria-label="Under the hood: show tokens and latency"
+              title="Under the hood"
+              className={`grid size-8 place-items-center rounded-full transition-colors ${
+                showHood ? "bg-accent-soft text-accent-ink" : "text-muted-ink hover:bg-bubble hover:text-ink"
+              }`}
+            >
+              <ChipIcon width={16} height={16} />
+            </button>
             {confirmReset ? (
               <div className="animate-rise flex items-center gap-1 text-xs font-semibold">
                 <button
@@ -224,6 +261,11 @@ export default function Home() {
         </header>
 
         <main className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+          {showHood && (
+            <div className="mb-4">
+              <StatsStrip stats={stats} />
+            </div>
+          )}
           <div aria-live="polite" aria-relevant="additions" className="space-y-4">
             <div className="animate-rise max-w-[85%] rounded-[20px] bg-bubble px-4 py-3 font-semibold">
               How can I help you today?
@@ -284,11 +326,17 @@ export default function Home() {
                     response={r}
                     onRetry={t.id === lastId ? () => retry(t.id) : undefined}
                   />
-                  {r.model && (
+                  {showHood ? (
                     <p className="mt-1.5 px-2 text-[11px] text-muted-ink">
-                      {providerLabel(r.provider)} · {r.model}
-                      {r.fallbackFrom && ` · fell back from ${providerLabel(r.fallbackFrom)}`}
+                      {telemetryLine(r.meta, modelLabel)}
                     </p>
+                  ) : (
+                    r.model && (
+                      <p className="mt-1.5 px-2 text-[11px] text-muted-ink">
+                        {providerLabel(r.provider)} · {r.model}
+                        {r.fallbackFrom && ` · fell back from ${providerLabel(r.fallbackFrom)}`}
+                      </p>
+                    )
                   )}
                 </div>
               );

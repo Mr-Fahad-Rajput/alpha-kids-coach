@@ -2,8 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the LLM client so no network calls are ever made.
 const generateCoachOutput = vi.fn();
+// Tests may resolve a bare LlmOutput; wrap it as { output, usage }.
 vi.mock("@/lib/llm/client", () => ({
-  generateCoachOutput: (...args: unknown[]) => generateCoachOutput(...args),
+  generateCoachOutput: async (...args: unknown[]) => {
+    const r = await generateCoachOutput(...args);
+    return r && "output" in r
+      ? r
+      : { output: r, usage: { inputTokens: 100, outputTokens: 20, cachedInputTokens: null } };
+  },
 }));
 
 import { GET as providersGET } from "@/app/api/providers/route";
@@ -14,6 +20,8 @@ import { __resetHealthForTests } from "@/lib/llm/health";
 import { CoachResponseSchema, type LlmOutput } from "@/lib/coach/schema";
 import { DEFAULT_CHECKIN, DEFAULT_NOTICE } from "@/lib/coach/copy";
 import { coachRateLimiter } from "@/lib/rate-limit";
+import { __resetCacheForTests } from "@/lib/coach/cache";
+import { __resetStatsForTests } from "@/lib/coach/stats";
 
 const ENV_VARS = [
   "ANTHROPIC_API_KEY",
@@ -34,6 +42,7 @@ const ENV_VARS = [
   "TRUST_PROXY",
   "VERCEL",
   "RATE_LIMIT_MAX",
+  "HISTORY_CHAR_BUDGET",
 ];
 
 function coachRequest(body: unknown, ip = "203.0.113.1") {
@@ -65,6 +74,10 @@ async function post(body: unknown, ip?: string) {
 
 beforeEach(() => {
   for (const k of ENV_VARS) vi.stubEnv(k, "");
+  // Response cache is covered in tests/optimisations.test.ts.
+  vi.stubEnv("RESPONSE_CACHE_TTL_SECONDS", "0");
+  __resetCacheForTests();
+  __resetStatsForTests();
   coachRateLimiter.reset();
   __resetHealthForTests();
   generateCoachOutput.mockReset();
@@ -249,7 +262,8 @@ describe("/api/coach providers and fallback", () => {
     expect(call).not.toHaveProperty("temperature");
     expect(call.messages.length).toBeLessThanOrEqual(12);
     expect(call.messages[0].role).toBe("user");
-    expect(call.messages.at(-1).content).toBe("m14");
+    expect(call.messages.at(-1).content).toBe("m14\n\nReply language: en");
+    expect(call).not.toHaveProperty("system");
   });
 });
 

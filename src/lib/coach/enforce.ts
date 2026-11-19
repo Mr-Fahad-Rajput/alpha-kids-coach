@@ -11,11 +11,37 @@ import {
   OFFTOPIC,
   UNAVAILABLE,
 } from "./copy";
-import type { CoachResponse, LlmOutput } from "./schema";
+import type { CoachMeta, CoachResponse, LlmOutput } from "./schema";
 
 export const MAX_STEPS = 5;
 
 type Meta = Pick<CoachResponse, "provider" | "model" | "fallbackFrom">;
+type Body = Omit<CoachResponse, "meta">;
+
+/** Placeholder meta; the route fills in latency and usage before replying. */
+function baseMeta(source: CoachMeta["source"], meta: Meta): CoachMeta {
+  return {
+    source,
+    latencyMs: 0,
+    inputTokens: source === "precheck" ? 0 : null,
+    outputTokens: source === "precheck" ? 0 : null,
+    cachedInputTokens: null,
+    provider: meta.provider,
+    model: meta.model,
+    ...(meta.fallbackFrom ? { fallbackFrom: meta.fallbackFrom } : {}),
+  };
+}
+
+function withMeta(body: Body): CoachResponse {
+  return {
+    ...body,
+    meta: baseMeta(body.source, {
+      provider: body.provider,
+      model: body.model,
+      fallbackFrom: body.fallbackFrom,
+    }),
+  };
+}
 
 export function escalationResponse(
   language: Language,
@@ -23,7 +49,7 @@ export function escalationResponse(
   meta: Meta = { provider: null, model: null },
 ): CoachResponse {
   const e = getEscalation(language);
-  return {
+  return withMeta({
     type: "escalation",
     language,
     category: "crisis",
@@ -34,7 +60,7 @@ export function escalationResponse(
     emergency: e.emergency,
     ...meta,
     source,
-  };
+  });
 }
 
 export function unavailableResponse(
@@ -42,7 +68,7 @@ export function unavailableResponse(
   meta: Meta = { provider: null, model: null },
 ): CoachResponse {
   const u = UNAVAILABLE[language];
-  return {
+  return withMeta({
     type: "unavailable",
     language,
     category: "everyday",
@@ -53,7 +79,7 @@ export function unavailableResponse(
     emergency: getEmergencyNumbers(language),
     ...meta,
     source: "fallback",
-  };
+  });
 }
 
 const clean = (s: string | null | undefined) => s?.trim() || null;
@@ -73,7 +99,7 @@ export function enforce(
 
   if (out.category === "offtopic") {
     const d = OFFTOPIC[language];
-    return {
+    return withMeta({
       ...base,
       type: "redirect",
       category: "offtopic",
@@ -81,11 +107,11 @@ export function enforce(
       steps: [],
       checkIn: out.checkIn && clean(out.checkIn.text) ? out.checkIn : d.checkIn,
       notice: null,
-    };
+    });
   }
 
   if (out.category === "everyday") {
-    return {
+    return withMeta({
       ...base,
       type: "plan",
       category: "everyday",
@@ -96,11 +122,11 @@ export function enforce(
           ? out.checkIn
           : DEFAULT_CHECKIN[language],
       notice: null,
-    };
+    });
   }
 
   // medical | legal | developmental
-  return {
+  return withMeta({
     ...base,
     type: "redirect",
     category: out.category,
@@ -108,5 +134,5 @@ export function enforce(
     steps,
     checkIn: out.checkIn && clean(out.checkIn.text) ? out.checkIn : null,
     notice: clean(out.notice) ?? DEFAULT_NOTICE[out.category][language],
-  };
+  });
 }

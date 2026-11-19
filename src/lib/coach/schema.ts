@@ -44,6 +44,23 @@ export const EmergencyNumbersSchema = z.object({
   elsewhere: z.string(),
 });
 
+const SOURCES = ["precheck", "cache", "llm", "fallback"] as const;
+
+/** Per-reply telemetry. Token counts come only from provider usage data. */
+export const CoachMetaSchema = z.object({
+  source: z.enum(SOURCES),
+  latencyMs: z.number(),
+  inputTokens: z.number().nullable(),
+  outputTokens: z.number().nullable(),
+  cachedInputTokens: z.number().nullable(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  fallbackFrom: z.string().optional(),
+  /** Cache hits only: input + output tokens of the original reply. */
+  tokensSaved: z.number().nullable().optional(),
+});
+export type CoachMeta = z.infer<typeof CoachMetaSchema>;
+
 export const CoachResponseSchema = z.object({
   type: z.enum(["plan", "redirect", "escalation", "unavailable"]),
   language: z.enum(LANGUAGES),
@@ -56,7 +73,8 @@ export const CoachResponseSchema = z.object({
   provider: z.string().nullable(),
   model: z.string().nullable(),
   fallbackFrom: z.string().optional(),
-  source: z.enum(["precheck", "llm", "fallback"]),
+  source: z.enum(SOURCES),
+  meta: CoachMetaSchema,
 });
 export type CoachResponse = z.infer<typeof CoachResponseSchema>;
 

@@ -17,6 +17,7 @@ import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { LlmOutputSchema, type ChatMessage, type LlmOutput } from "@/lib/coach/schema";
+import { SYSTEM_PROMPT } from "@/lib/coach/prompt";
 import { ProviderNotConfiguredError, StructuredOutputError } from "./errors";
 import type { ProviderId } from "./models";
 import {
@@ -113,30 +114,70 @@ export function parseJsonOutput(text: string): LlmOutput {
 export interface CoachCallOptions {
   provider: ProviderId;
   model: string;
-  system: string;
+  /** History ending with the latest user message (reply-language line included). */
   messages: ChatMessage[];
   env?: Env;
+}
+
+export interface CoachUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+}
+
+export interface CoachCallResult {
+  output: LlmOutput;
+  usage: CoachUsage;
+}
+
+/** Extra line for JSON-text providers; kept constant so the prefix stays cacheable. */
+const JSON_ONLY = "\nRespond with the JSON object only, no other text.";
+
+/**
+ * Static instructions. Anthropic gets an explicit cache breakpoint on the
+ * system prompt; OpenAI, DeepSeek and Gemini cache identical prefixes
+ * automatically.
+ */
+function instructionsFor(provider: ProviderId) {
+  const content = JSON_TEXT_PROVIDERS.has(provider)
+    ? SYSTEM_PROMPT + JSON_ONLY
+    : SYSTEM_PROMPT;
+  if (provider !== "anthropic") return content;
+  return {
+    role: "system" as const,
+    content,
+    providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } },
+  };
+}
+
+function toUsage(u: {
+  inputTokens: number | undefined;
+  outputTokens: number | undefined;
+  inputTokenDetails?: { cacheReadTokens: number | undefined };
+}): CoachUsage {
+  return {
+    inputTokens: u.inputTokens ?? null,
+    outputTokens: u.outputTokens ?? null,
+    cachedInputTokens: u.inputTokenDetails?.cacheReadTokens ?? null,
+  };
 }
 
 /** One structured coach call. Throws StructuredOutputError on bad output. */
 export async function generateCoachOutput(
   opts: CoachCallOptions,
-): Promise<LlmOutput> {
-  const { provider, model, system, messages, env } = opts;
+): Promise<CoachCallResult> {
+  const { provider, model, messages, env } = opts;
   const common = {
     model: getModel(provider, model, env),
-    instructions: system,
+    instructions: instructionsFor(provider),
     messages,
     maxOutputTokens: maxOutputTokensFor(provider),
     ...reasoningOptions(provider),
   };
 
   if (JSON_TEXT_PROVIDERS.has(provider)) {
-    const result = await generateText({
-      ...common,
-      instructions: `${system}\nRespond with the JSON object only, no other text.`,
-    });
-    return parseJsonOutput(result.text);
+    const result = await generateText(common);
+    return { output: parseJsonOutput(result.text), usage: toUsage(result.usage) };
   }
 
   try {
@@ -144,7 +185,7 @@ export async function generateCoachOutput(
       ...common,
       output: Output.object({ schema: LlmOutputSchema }),
     });
-    return result.output;
+    return { output: result.output, usage: toUsage(result.usage) };
   } catch (err) {
     if (NoObjectGeneratedError.isInstance(err)) {
       throw new StructuredOutputError(err.message);
