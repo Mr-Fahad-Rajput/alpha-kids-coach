@@ -12,6 +12,7 @@ import {
   UNAVAILABLE,
 } from "./copy";
 import type { CoachMeta, CoachResponse, LlmOutput } from "./schema";
+import { isDiagnosisStatement, stripDiagnoses } from "./diagnosis";
 
 export const MAX_STEPS = 5;
 
@@ -84,11 +85,44 @@ export function unavailableResponse(
 
 const clean = (s: string | null | undefined) => s?.trim() || null;
 
+/**
+ * Removes any sentence/step that attributes a condition to the child. When
+ * something was removed, the reply becomes a developmental redirect so the
+ * professional-assessment notice is always shown.
+ */
+export function guardDiagnoses(out: LlmOutput, language: Language): LlmOutput {
+  const summary = stripDiagnoses(out.summary);
+  const notice = out.notice ? stripDiagnoses(out.notice) : { text: null, removed: false };
+  const steps = out.steps.filter((s) => !isDiagnosisStatement(s));
+  const checkInHit = !!out.checkIn && isDiagnosisStatement(out.checkIn.text);
+  const removed =
+    summary.removed || notice.removed || steps.length !== out.steps.length || checkInHit;
+  if (!removed) return out;
+
+  const defaultNotice = DEFAULT_NOTICE.developmental[language];
+  const keptNotice = clean(notice.text);
+  return {
+    category:
+      out.category === "everyday" || out.category === "offtopic"
+        ? "developmental"
+        : out.category,
+    summary: clean(summary.text) ?? defaultNotice,
+    steps,
+    checkIn: checkInHit ? null : out.checkIn,
+    notice:
+      keptNotice && keptNotice !== defaultNotice
+        ? `${keptNotice} ${defaultNotice}`
+        : defaultNotice,
+  };
+}
+
 export function enforce(
-  out: LlmOutput,
+  raw: LlmOutput,
   language: Language,
   meta: Meta,
 ): CoachResponse {
+  if (raw.category === "crisis") return escalationResponse(language, "llm", meta);
+  const out = guardDiagnoses(raw, language);
   if (out.category === "crisis") return escalationResponse(language, "llm", meta);
 
   const steps = out.steps

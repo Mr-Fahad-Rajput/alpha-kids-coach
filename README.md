@@ -74,7 +74,7 @@ Write values in `.env.local` without quotes: `docker --env-file` keeps quotes as
 ## How provider selection works
 
 - One configured provider is enough to run the app.
-- Configure several and a provider selector appears in the UI (the model pill in the header). Every provider has a model selector.
+- Configure several and a provider selector appears in the UI (the model pill in the header). Every provider has a model selector. A green dot marks a healthy provider; amber means it recently failed and requests are currently falling back. If the default provider is unhealthy, the first healthy one is preselected.
 - The default provider is the first available in the order gemini → deepseek → anthropic → openai → openai-compatible, unless `LLM_PROVIDER` is set.
 - Built-in model IDs per provider (first = default):
 

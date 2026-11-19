@@ -102,6 +102,14 @@ export default function Home() {
     };
   }, []);
 
+  // Refresh health flags when the picker opens; keep the user's selection.
+  const refreshProviders = useCallback(() => {
+    fetch("/api/providers", { cache: "no-store" })
+      .then((r) => (r.ok ? (r.json() as Promise<ProvidersResponse>) : Promise.reject()))
+      .then((data) => setProviders(data.providers))
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     endRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "end" });
@@ -214,6 +222,7 @@ export default function Home() {
               model={model}
               onProviderChange={onProviderChange}
               onModelChange={setModel}
+              onOpen={refreshProviders}
               disabled={pending}
             />
             <button

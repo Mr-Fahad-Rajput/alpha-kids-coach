@@ -18,9 +18,9 @@ export const DEFAULT_NOTICE: Record<"medical" | "legal" | "developmental", L> = 
     "ur-roman": "Qanooni masail ke liye kisi qualified family lawyer ya mutaliqa idaray se raabta karein.",
   },
   developmental: {
-    en: "A professional assessment is the best way to understand what is going on. Please talk to your paediatrician or a child specialist.",
-    ur: "اصل صورتحال سمجھنے کا بہترین طریقہ کسی ماہر سے جائزہ کروانا ہے۔ اپنے بچوں کے ڈاکٹر یا چائلڈ اسپیشلسٹ سے بات کریں۔",
-    "ur-roman": "Asal surat-e-haal samajhne ka behtareen tareeqa kisi mahir se jaiza karwana hai. Apne bachon ke doctor ya child specialist se baat karein.",
+    en: "Only a qualified professional, such as a paediatrician or child psychologist, can assess attention, development or behaviour concerns.",
+    ur: "توجہ، نشوونما یا رویّے سے متعلق خدشات کا جائزہ صرف کوئی مستند ماہر، جیسے بچوں کے ڈاکٹر یا چائلڈ سائیکالوجسٹ، ہی لے سکتا ہے۔",
+    "ur-roman": "Tawajjuh, nashonuma ya rawaiye ke khadshaat ka jaiza sirf koi qualified mahir, jaise bachon ke doctor ya child psychologist, hi le sakta hai.",
   },
 };
 
