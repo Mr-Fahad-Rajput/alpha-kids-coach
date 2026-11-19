@@ -118,4 +118,45 @@ describe("registry", () => {
     expect(isAllowed("gemini", "gemini-3.8-flash", env)).toBe(false);
     expect(isAllowed("anthropic", "not-a-model", env)).toBe(false);
   });
+
+  it("11. OPENAI_API_KEY enables openai; default gpt-6-luna; OPENAI_MODELS overrides", () => {
+    expect(getAvailableProviders({ OPENAI_API_KEY: "o-test" })).toEqual(["openai"]);
+    expect(resolveDefaults({ OPENAI_API_KEY: "o-test" }).defaultModel).toBe("gpt-6-luna");
+    const d = resolveDefaults({ OPENAI_API_KEY: "o-test", OPENAI_MODELS: "gpt-6.2-sol, x" });
+    expect(d.providers[0].models.map((m) => m.id)).toEqual(["gpt-6.2-sol", "x"]);
+    expect(d.defaultModel).toBe("gpt-6.2-sol");
+  });
+
+  it("12. openai-compatible needs base URL AND models; key optional; label from NAME", () => {
+    expect(
+      getAvailableProviders({ OPENAI_COMPATIBLE_BASE_URL: "http://localhost:11434/v1" }),
+    ).toEqual([]);
+    expect(getAvailableProviders({ OPENAI_COMPATIBLE_MODELS: "llama3.3" })).toEqual([]);
+    expect(
+      getAvailableProviders({ OPENAI_COMPATIBLE_API_KEY: "k-test", OPENAI_COMPATIBLE_MODELS: "m" }),
+    ).toEqual([]);
+    const env = {
+      OPENAI_COMPATIBLE_BASE_URL: "http://localhost:11434/v1",
+      OPENAI_COMPATIBLE_MODELS: "llama3.3,qwen3",
+    };
+    const d = resolveDefaults(env);
+    expect(d.defaultProvider).toBe("openai-compatible");
+    expect(d.defaultModel).toBe("llama3.3");
+    expect(d.providers[0].label).toBe("OpenAI-compatible");
+    expect(isAllowed("openai-compatible", "qwen3", env)).toBe(true);
+    expect(
+      resolveDefaults({ ...env, OPENAI_COMPATIBLE_NAME: "Groq" }).providers[0].label,
+    ).toBe("Groq");
+  });
+
+  it("13. full default order with all five providers", () => {
+    expect(
+      getAvailableProviders({
+        ...ALL,
+        OPENAI_API_KEY: "o-test",
+        OPENAI_COMPATIBLE_BASE_URL: "https://openrouter.ai/api/v1",
+        OPENAI_COMPATIBLE_MODELS: "m",
+      }),
+    ).toEqual(["gemini", "deepseek", "anthropic", "openai", "openai-compatible"]);
+  });
 });

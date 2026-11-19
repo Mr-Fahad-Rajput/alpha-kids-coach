@@ -1,18 +1,26 @@
 "use client";
 
 // Author: Fahad Ameen Rajput
-// Minimal coach page. Conversation history lives only in React state;
-// nothing is stored server-side.
+// Alpha Kids Coach chat. History lives only in React state; Reset clears it.
 
-import { useEffect, useState } from "react";
-import ProviderPicker, { type ProviderOption } from "@/components/ProviderPicker";
+import { useCallback, useEffect, useRef, useState } from "react";
+import CoachCard from "@/components/CoachCard";
+import ModelPicker, { type ProviderOption } from "@/components/ModelPicker";
+import { ArrowUpIcon, ChipIcon, ResetIcon } from "@/components/icons";
+import { StatsStrip, telemetryLine } from "@/components/UnderTheHood";
+import type { Stats } from "@/lib/coach/stats";
+import {
+  CoachResponseSchema,
+  HISTORY_LIMIT,
+  type ChatMessage,
+  type CoachResponse,
+} from "@/lib/coach/schema";
+import { detectLanguage } from "@/lib/safety/language";
 
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-  provider?: string;
-  model?: string;
-}
+type Turn =
+  | { id: number; role: "user"; content: string }
+  | { id: number; role: "assistant"; response: CoachResponse }
+  | { id: number; role: "error"; text: string };
 
 interface ProvidersResponse {
   providers: ProviderOption[];
@@ -20,177 +28,387 @@ interface ProvidersResponse {
 }
 
 const ERROR_TEXT: Record<string, string> = {
-  invalid_request: "That message could not be sent. Please check its length.",
-  invalid_provider_or_model: "That provider or model is not available.",
-  no_provider_configured: "No LLM provider is configured.",
-  rate_limited: "Too many requests. Please wait a few minutes.",
-  llm_unavailable: "The coach is unavailable right now. Please try again.",
+  invalid_request: "That message couldn't be sent. Please keep it under 2,000 characters.",
+  invalid_provider_or_model: "That model isn't available. Pick another one from the menu.",
+  no_provider_configured:
+    "No AI provider is configured on the server yet. In an emergency, call your local emergency number.",
+  rate_limited: "Too many messages right now. Please wait a few minutes and try again.",
+  network: "Couldn't reach the coach. Check your connection and try again.",
 };
+
+const SUGGESTIONS = [
+  "My 4-year-old won't stay in bed at night.",
+  "My 8-year-old melts down when screen time ends.",
+  "میرا بیٹا ہوم ورک کرنے سے انکار کرتا ہے۔",
+  "میری بیٹی کھانے کے وقت بہت ضد کرتی ہے۔",
+];
+
+let nextId = 1;
+
+/** Assistant turns go back to the model as summary + steps text. */
+function toApiMessages(turns: Turn[]): ChatMessage[] {
+  const msgs: ChatMessage[] = [];
+  for (const t of turns) {
+    if (t.role === "user") msgs.push({ role: "user", content: t.content });
+    else if (t.role === "assistant" && t.response.type !== "unavailable") {
+      const r = t.response;
+      const text = [r.summary, ...r.steps.map((s, i) => `${i + 1}. ${s}`)]
+        .join("\n")
+        .slice(0, 2000);
+      msgs.push({ role: "assistant", content: text });
+    }
+  }
+  const recent = msgs.slice(-HISTORY_LIMIT);
+  const firstUser = recent.findIndex((m) => m.role === "user");
+  return firstUser < 0 ? [] : recent.slice(firstUser);
+}
+
+function langAttrs(text: string) {
+  return detectLanguage(text) === "ur"
+    ? ({ dir: "rtl", lang: "ur" } as const)
+    : ({ dir: "auto" } as const);
+}
 
 export default function Home() {
   const [providers, setProviders] = useState<ProviderOption[] | null>(null);
-  const [loadError, setLoadError] = useState(false);
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [showHood, setShowHood] = useState(false);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     fetch("/api/providers", { cache: "no-store" })
-      .then((r) => {
-        if (!r.ok) throw new Error(String(r.status));
-        return r.json() as Promise<ProvidersResponse>;
-      })
+      .then((r) => (r.ok ? (r.json() as Promise<ProvidersResponse>) : Promise.reject()))
       .then((data) => {
         if (cancelled) return;
         setProviders(data.providers);
         const def =
-          data.providers.find((p) => p.id === data.defaultProvider) ??
-          data.providers[0];
+          data.providers.find((p) => p.id === data.defaultProvider) ?? data.providers[0];
         if (def) {
           setProvider(def.id);
           setModel(def.defaultModel);
         }
       })
-      .catch(() => {
-        if (!cancelled) setLoadError(true);
-      });
+      .catch(() => !cancelled && setProviders([]));
     return () => {
       cancelled = true;
     };
   }, []);
 
-  function handleProviderChange(id: string) {
-    setProvider(id);
-    const p = providers?.find((x) => x.id === id);
-    setModel(p?.defaultModel ?? "");
-  }
+  // Refresh health flags when the picker opens; keep the user's selection.
+  const refreshProviders = useCallback(() => {
+    fetch("/api/providers", { cache: "no-store" })
+      .then((r) => (r.ok ? (r.json() as Promise<ProvidersResponse>) : Promise.reject()))
+      .then((data) => setProviders(data.providers))
+      .catch(() => {});
+  }, []);
 
-  async function send() {
-    const content = input.trim();
-    if (!content || pending) return;
-    const history: Message[] = [...messages, { role: "user", content }];
-    setMessages(history);
-    setInput("");
-    setError(null);
+  useEffect(() => {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    endRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "end" });
+  }, [turns, pending]);
+
+  // Auto-grow the composer up to ~6 lines.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
+  }, [input]);
+
+  const providerLabel = useCallback(
+    (id: string | null | undefined) =>
+      providers?.find((p) => p.id === id)?.label ?? id ?? "",
+    [providers],
+  );
+
+  const modelLabel = useCallback(
+    (providerId: string | null, modelId: string | null) => {
+      const p = providers?.find((x) => x.id === providerId);
+      if (!modelId) return p?.label ?? providerId ?? "";
+      return p?.models.find((m) => m.id === modelId)?.label ?? modelId;
+    },
+    [providers],
+  );
+
+  const refreshStats = useCallback(() => {
+    fetch("/api/stats", { cache: "no-store" })
+      .then((r) => (r.ok ? (r.json() as Promise<Stats>) : Promise.reject()))
+      .then(setStats)
+      .catch(() => setStats(null));
+  }, []);
+
+  useEffect(() => {
+    if (showHood) refreshStats();
+  }, [showHood, refreshStats]);
+
+  async function request(history: Turn[]) {
     setPending(true);
     try {
       const res = await fetch("/api/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: history.map(({ role, content }) => ({ role, content })),
-          provider,
-          model,
+          messages: toApiMessages(history),
+          ...(provider ? { provider, model } : {}),
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(ERROR_TEXT[data?.error] ?? "Something went wrong.");
-        return;
+      const data: unknown = await res.json().catch(() => null);
+      const parsed = CoachResponseSchema.safeParse(data);
+      if (res.ok && parsed.success) {
+        setTurns([...history, { id: nextId++, role: "assistant", response: parsed.data }]);
+      } else {
+        const code = (data as { error?: string } | null)?.error ?? "network";
+        setTurns([
+          ...history,
+          { id: nextId++, role: "error", text: ERROR_TEXT[code] ?? ERROR_TEXT.network },
+        ]);
       }
-      setMessages([
-        ...history,
-        {
-          role: "assistant",
-          content: data.text,
-          provider: data.provider,
-          model: data.model,
-        },
-      ]);
     } catch {
-      setError(ERROR_TEXT.llm_unavailable);
+      setTurns([...history, { id: nextId++, role: "error", text: ERROR_TEXT.network }]);
     } finally {
       setPending(false);
+      if (showHood) refreshStats();
     }
   }
 
-  function reset() {
-    setMessages([]);
+  function send(text: string) {
+    const content = text.trim();
+    if (!content || pending) return;
     setInput("");
-    setError(null);
+    setConfirmReset(false);
+    const history: Turn[] = [...turns, { id: nextId++, role: "user", content }];
+    setTurns(history);
+    void request(history);
   }
 
-  if (loadError) {
-    return (
-      <main>
-        <p>Could not load providers.</p>
-      </main>
-    );
+  function retry(turnId: number) {
+    if (pending) return;
+    const history = turns.filter((t) => t.id !== turnId);
+    setTurns(history);
+    void request(history);
   }
-  if (providers === null) {
-    return (
-      <main>
-        <p>Loading…</p>
-      </main>
-    );
+
+  function reset() {
+    setTurns([]);
+    setInput("");
+    setConfirmReset(false);
+    inputRef.current?.focus();
   }
-  if (providers.length === 0) {
-    return (
-      <main>
-        <p>
-          No LLM provider configured. Set ANTHROPIC_API_KEY, GEMINI_API_KEY or
-          DEEPSEEK_API_KEY.
-        </p>
-      </main>
-    );
+
+  function onProviderChange(id: string) {
+    setProvider(id);
+    setModel(providers?.find((p) => p.id === id)?.defaultModel ?? "");
   }
+
+  const lastId = turns[turns.length - 1]?.id;
 
   return (
-    <main>
-      <h1>Alpha Kids Coach</h1>
-      <ProviderPicker
-        providers={providers}
-        provider={provider}
-        model={model}
-        onProviderChange={handleProviderChange}
-        onModelChange={setModel}
-        disabled={pending}
-      />
+    <div className="flex min-h-dvh justify-center sm:px-4 sm:py-6">
+      <div className="flex h-dvh w-full max-w-[720px] flex-col overflow-hidden bg-surface sm:h-[calc(100dvh-3rem)] sm:rounded-[24px] sm:shadow-[0_20px_60px_-20px_rgba(15,23,42,0.25)]">
+        <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-ink/[0.06] bg-surface/80 px-5 py-3 backdrop-blur-xl">
+          <h1 className="text-lg font-extrabold tracking-tight">Alpha Kids Coach</h1>
+          <div className="flex items-center gap-2">
+            <ModelPicker
+              providers={providers}
+              provider={provider}
+              model={model}
+              onProviderChange={onProviderChange}
+              onModelChange={setModel}
+              onOpen={refreshProviders}
+              disabled={pending}
+            />
+            <button
+              type="button"
+              onClick={() => setShowHood((v) => !v)}
+              aria-pressed={showHood}
+              aria-label="Under the hood: show tokens and latency"
+              title="Under the hood"
+              className={`grid size-8 place-items-center rounded-full transition-colors ${
+                showHood ? "bg-accent-soft text-accent-ink" : "text-muted-ink hover:bg-bubble hover:text-ink"
+              }`}
+            >
+              <ChipIcon width={16} height={16} />
+            </button>
+            {confirmReset ? (
+              <div className="animate-rise flex items-center gap-1 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={reset}
+                  className="rounded-full bg-accent px-3 py-1.5 text-white transition-colors hover:bg-accent-hover"
+                >
+                  Clear chat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmReset(false)}
+                  className="rounded-full px-2 py-1.5 text-muted-ink hover:text-ink"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmReset(true)}
+                disabled={pending || turns.length === 0}
+                aria-label="Reset conversation"
+                title="Reset conversation"
+                className="grid size-8 place-items-center rounded-full text-muted-ink transition-colors hover:bg-bubble hover:text-ink disabled:opacity-40"
+              >
+                <ResetIcon width={16} height={16} />
+              </button>
+            )}
+          </div>
+        </header>
 
-      <ol>
-        {messages.map((m, i) => (
-          <li key={i}>
-            <strong>{m.role === "user" ? "You" : "Coach"}:</strong> {m.content}
-            {m.role === "assistant" && m.provider && (
-              <div>
-                <small>
-                  {m.provider} / {m.model}
-                </small>
+        <main className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+          {showHood && (
+            <div className="mb-4">
+              <StatsStrip stats={stats} />
+            </div>
+          )}
+          <div aria-live="polite" aria-relevant="additions" className="space-y-4">
+            <div className="animate-rise max-w-[85%] rounded-[20px] bg-bubble px-4 py-3 font-semibold">
+              How can I help you today?
+            </div>
+            {turns.length === 0 && (
+              <div className="animate-rise space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => send(s)}
+                      disabled={pending}
+                      {...langAttrs(s)}
+                      className="rounded-full border border-backdrop bg-surface px-3.5 py-1.5 text-sm text-ink transition-colors hover:border-accent hover:text-accent-ink"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-ink">Ask in English or Urdu.</p>
               </div>
             )}
-          </li>
-        ))}
-      </ol>
 
-      {error && <p role="alert">{error}</p>}
+            {turns.map((t) => {
+              if (t.role === "user") {
+                return (
+                  <div key={t.id} className="animate-rise flex justify-end">
+                    <p
+                      {...langAttrs(t.content)}
+                      className="max-w-[85%] whitespace-pre-wrap rounded-[20px] bg-ink px-4 py-2.5 text-white"
+                    >
+                      {t.content}
+                    </p>
+                  </div>
+                );
+              }
+              if (t.role === "error") {
+                return (
+                  <div key={t.id} className="animate-rise rounded-[20px] bg-bubble p-5 text-sm text-muted-ink">
+                    <p>{t.text}</p>
+                    {t.id === lastId && (
+                      <button
+                        type="button"
+                        onClick={() => retry(t.id)}
+                        className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-surface px-4 py-1.5 font-semibold text-ink ring-1 ring-backdrop hover:ring-accent"
+                      >
+                        <ResetIcon width={14} height={14} /> Retry
+                      </button>
+                    )}
+                  </div>
+                );
+              }
+              const r = t.response;
+              return (
+                <div key={t.id} className="animate-rise">
+                  <CoachCard
+                    response={r}
+                    onRetry={t.id === lastId ? () => retry(t.id) : undefined}
+                  />
+                  {showHood ? (
+                    <p className="mt-1.5 px-2 text-[11px] text-muted-ink">
+                      {telemetryLine(r.meta, modelLabel)}
+                    </p>
+                  ) : (
+                    r.model && (
+                      <p className="mt-1.5 px-2 text-[11px] text-muted-ink">
+                        {providerLabel(r.provider)} · {r.model}
+                        {r.fallbackFrom && ` · fell back from ${providerLabel(r.fallbackFrom)}`}
+                      </p>
+                    )
+                  )}
+                </div>
+              );
+            })}
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void send();
-        }}
-      >
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          maxLength={2000}
-          rows={4}
-          placeholder="Describe your parenting concern…"
-          disabled={pending}
-        />
-        <div>
-          <button type="submit" disabled={pending || !input.trim()}>
-            {pending ? "Sending…" : "Send"}
-          </button>{" "}
-          <button type="button" onClick={reset} disabled={pending}>
-            Reset
-          </button>
+            {pending && (
+              <div
+                className="animate-rise inline-flex items-center gap-1 rounded-[20px] bg-bubble px-4 py-3.5"
+                role="status"
+                aria-label="Coach is typing"
+              >
+                <span className="typing-dot size-2 rounded-full bg-muted" />
+                <span className="typing-dot size-2 rounded-full bg-muted" />
+                <span className="typing-dot size-2 rounded-full bg-muted" />
+              </div>
+            )}
+            <div ref={endRef} />
+          </div>
+        </main>
+
+        <div className="border-t border-ink/[0.06] bg-surface/90 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl sm:px-6">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              send(input);
+            }}
+            className="flex items-end gap-2 rounded-[24px] bg-bubble p-1.5 ps-4 ring-1 ring-transparent transition-shadow focus-within:ring-accent"
+          >
+            <label htmlFor="composer" className="sr-only">
+              Your message
+            </label>
+            <textarea
+              id="composer"
+              ref={inputRef}
+              rows={1}
+              value={input}
+              maxLength={2000}
+              dir="auto"
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  send(input);
+                }
+              }}
+              placeholder="Describe what's happening…"
+              className="max-h-[168px] flex-1 resize-none bg-transparent py-2 text-[15px] leading-6 text-ink placeholder:text-muted-ink focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={pending || !input.trim()}
+              aria-label="Send message"
+              className="grid size-9 shrink-0 place-items-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-muted"
+            >
+              <ArrowUpIcon width={18} height={18} />
+            </button>
+          </form>
+          <p className="mt-2 text-center text-[11px] text-muted-ink">
+            General parenting guidance, not medical or legal advice. In an emergency, call your
+            local emergency number.
+          </p>
         </div>
-      </form>
-    </main>
+      </div>
+    </div>
   );
 }

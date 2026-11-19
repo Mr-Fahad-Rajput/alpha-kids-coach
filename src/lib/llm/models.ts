@@ -1,7 +1,13 @@
 // Author: Fahad Ameen Rajput
 // Curated model lists per provider. The first entry is the provider default.
 
-export const PROVIDER_IDS = ["gemini", "deepseek", "anthropic"] as const;
+export const PROVIDER_IDS = [
+  "gemini",
+  "deepseek",
+  "anthropic",
+  "openai",
+  "openai-compatible",
+] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export interface ModelInfo {
@@ -13,6 +19,8 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
   gemini: "Google Gemini",
   deepseek: "DeepSeek",
   anthropic: "Anthropic Claude",
+  openai: "OpenAI",
+  "openai-compatible": "OpenAI-compatible",
 };
 
 export const CURATED_MODELS: Record<ProviderId, readonly ModelInfo[]> = {
@@ -30,6 +38,13 @@ export const CURATED_MODELS: Record<ProviderId, readonly ModelInfo[]> = {
     { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
     { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
   ],
+  openai: [
+    { id: "gpt-6-luna", label: "GPT-6 Luna" },
+    { id: "gpt-6.2-sol", label: "GPT-6.2 Sol" },
+    { id: "gpt-6.2-astra", label: "GPT-6.2 Astra" },
+  ],
+  // No curated list: models come only from OPENAI_COMPATIBLE_MODELS.
+  "openai-compatible": [],
 };
 
 /** Label for a model id; falls back to the id itself for env-supplied models. */

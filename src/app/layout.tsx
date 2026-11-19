@@ -1,29 +1,35 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Inter, Noto_Nastaliq_Urdu } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
+  weight: ["400", "600", "800"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+const urdu = Noto_Nastaliq_Urdu({
+  variable: "--font-urdu",
+  subsets: ["arabic"],
+  weight: ["400", "700"],
+  preload: false,
 });
 
 export const metadata: Metadata = {
   title: "Alpha Kids Coach",
-  description: "A short, safe parenting plan with a check-in.",
+  description:
+    "A short, safe parenting plan with a check-in, in English and Urdu.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#E2E8F0",
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="en" className={`${inter.variable} ${urdu.variable}`}>
+      <body>{children}</body>
     </html>
   );
 }
