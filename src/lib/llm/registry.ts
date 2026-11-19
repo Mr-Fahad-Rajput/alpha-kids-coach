@@ -19,12 +19,21 @@ export const KEY_VARS: Record<ProviderId, readonly string[]> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
   deepseek: ["DEEPSEEK_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  // Optional for OpenAI-compatible endpoints (e.g. a local Ollama needs none).
+  "openai-compatible": ["OPENAI_COMPATIBLE_API_KEY"],
 };
+
+/** OpenAI-compatible endpoint settings (names only; values read at call time). */
+export const COMPAT_BASE_URL_VAR = "OPENAI_COMPATIBLE_BASE_URL";
+export const COMPAT_NAME_VAR = "OPENAI_COMPATIBLE_NAME";
 
 const MODEL_LIST_VARS: Record<ProviderId, string> = {
   gemini: "GEMINI_MODELS",
   deepseek: "DEEPSEEK_MODELS",
   anthropic: "ANTHROPIC_MODELS",
+  openai: "OPENAI_MODELS",
+  "openai-compatible": "OPENAI_COMPATIBLE_MODELS",
 };
 
 export interface ProviderInfo {
@@ -54,6 +63,30 @@ export function getApiKey(provider: ProviderId, env: Env = process.env) {
   return undefined;
 }
 
+/** Base URL of the OpenAI-compatible endpoint, or undefined. */
+export function getCompatBaseUrl(env: Env = process.env) {
+  return nonEmpty(env[COMPAT_BASE_URL_VAR]);
+}
+
+function providerLabel(id: ProviderId, env: Env): string {
+  if (id === "openai-compatible") {
+    return nonEmpty(env[COMPAT_NAME_VAR]) ?? PROVIDER_LABELS[id];
+  }
+  return PROVIDER_LABELS[id];
+}
+
+/** True when a provider has everything it needs to be called. */
+export function isProviderAvailable(provider: ProviderId, env: Env = process.env) {
+  if (provider === "openai-compatible") {
+    // Key optional; base URL and an explicit model list are required.
+    return (
+      getCompatBaseUrl(env) !== undefined &&
+      nonEmpty(env[MODEL_LIST_VARS[provider]]) !== undefined
+    );
+  }
+  return getApiKey(provider, env) !== undefined;
+}
+
 function modelIdsFor(provider: ProviderId, env: Env): string[] {
   const override = nonEmpty(env[MODEL_LIST_VARS[provider]]);
   if (override) {
@@ -71,9 +104,9 @@ function modelIdsFor(provider: ProviderId, env: Env): string[] {
   return CURATED_MODELS[provider].map((m) => m.id);
 }
 
-/** Available provider ids in fixed order: gemini, deepseek, anthropic. */
+/** Available provider ids in fixed order: gemini, deepseek, anthropic, openai, openai-compatible. */
 export function getAvailableProviders(env: Env = process.env): ProviderId[] {
-  return PROVIDER_IDS.filter((p) => getApiKey(p, env) !== undefined);
+  return PROVIDER_IDS.filter((p) => isProviderAvailable(p, env));
 }
 
 let warnedUnavailablePreferred = false;
@@ -113,7 +146,7 @@ export function resolveDefaults(env: Env = process.env): ResolvedDefaults {
     }
     return {
       id,
-      label: PROVIDER_LABELS[id],
+      label: providerLabel(id, env),
       models: ids.map((m) => ({ id: m, label: modelLabel(id, m) })),
       defaultModel,
     };
