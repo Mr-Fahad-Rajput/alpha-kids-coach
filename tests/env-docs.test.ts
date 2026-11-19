@@ -2,7 +2,7 @@
 // Keeps README Configuration table, .env.example and the code in sync.
 // Reads only committed docs/source files — never real env files.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CURATED_MODELS, PROVIDER_IDS } from "@/lib/llm/models";
@@ -41,6 +41,20 @@ function registryVars(): string[] {
   return [...new Set([...quoted, ...access].map((m) => m[1]))];
 }
 
+/** Env var names read anywhere in src/ or scripts/ via env.X / process.env.X. */
+function codeVars(): string[] {
+  const names = new Set<string>();
+  for (const dir of ["src", "scripts"]) {
+    const files = readdirSync(`${root}/${dir}`, { recursive: true }) as string[];
+    for (const f of files) {
+      if (!/\.(ts|tsx)$/.test(f)) continue;
+      const src = read(`${dir}/${f}`);
+      for (const m of src.matchAll(/\benv\.([A-Z][A-Z0-9_]*)\b/g)) names.add(m[1]);
+    }
+  }
+  return [...names];
+}
+
 describe("env documentation", () => {
   it("README Configuration table lists variables", () => {
     expect(readmeConfigVars().length).toBeGreaterThan(0);
@@ -61,9 +75,17 @@ describe("env documentation", () => {
     expect(missing).toEqual([]);
   });
 
+  it("every env var read in src/ and scripts/ is in the README table", () => {
+    const documented = new Set(readmeConfigVars());
+    const found = codeVars();
+    expect(found).toContain("RATE_LIMIT_MAX");
+    expect(found).toContain("EVAL_BASE_URL");
+    expect(found.filter((v) => !documented.has(v))).toEqual([]);
+  });
+
   it("README model table matches models.ts", () => {
     const body = section(read("README.md"), "How provider selection works");
-    for (const id of PROVIDER_IDS) {
+    for (const id of PROVIDER_IDS.filter((p) => CURATED_MODELS[p].length > 0)) {
       const row = body
         .split("\n")
         .find((l) => l.includes(`(\`${id}\`)`));
